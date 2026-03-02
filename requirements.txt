@@ -5,3 +5,4 @@ pillow
 matplotlib
 scikit-learn
 seaborn
+gdown

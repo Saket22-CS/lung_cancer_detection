@@ -23,6 +23,28 @@ warnings.filterwarnings("ignore")
 
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
+# ── Auto-download models from Google Drive ─────────────────────────────────
+try:
+    import gdown
+    MODEL_IDS = {
+        "custom_cnn.weights.h5" : "1AooIsiyZJWeB8eTJlsoAMw-9tw25sVCY",
+        "vgg16.weights.h5"      : "1ssG7-cJyu_LEEgxgoE_xw8SvkUTJ_wVQ",
+        "resnet50.weights.h5"   : "1xatIHolRiDBh0VWBdY1fWOfNTTwwcEPh",
+    }
+    os.makedirs("models", exist_ok=True)
+    for fname, fid in MODEL_IDS.items():
+        path = os.path.join("models", fname)
+        if not os.path.exists(path):
+            print(f"[DOWNLOAD] {fname}…")
+            gdown.download(
+                f"https://drive.google.com/uc?id={fid}",
+                path, quiet=False
+            )
+        else:
+            print(f"[CACHED] {fname}")
+except Exception as e:
+    print(f"[DOWNLOAD ERROR] {e}")
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  PAGE CONFIG  (must be first Streamlit call)
 # ─────────────────────────────────────────────────────────────────────────────
