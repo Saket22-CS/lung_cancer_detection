@@ -21,6 +21,8 @@ from sklearn.metrics import roc_curve, auc
 import warnings
 warnings.filterwarnings("ignore")
 
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  PAGE CONFIG  (must be first Streamlit call)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,10 +50,22 @@ html, body, [class*="css"] {
 
 /* ── Sidebar ── */
 section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0d1321 0%, #0a1628 100%);
-    border-right: 1px solid #1e3a5f;
+    background: linear-gradient(180deg, #0d1321 0%, #0a1628 100%) !important;
+    border-right: 1px solid #1e3a5f !important;
+    display: block !important;
+    visibility: visible !important;
 }
-section[data-testid="stSidebar"] * { color: #cbd5e1 !important; }
+section[data-testid="stSidebar"] > div {
+    display: block !important;
+    visibility: visible !important;
+}
+section[data-testid="stSidebar"] * { 
+    color: #cbd5e1 !important; 
+}
+[data-testid="collapsedControl"] {
+    display: block !important;
+    color: #38bdf8 !important;
+}
 
 /* ── Hide default streamlit chrome ── */
 #MainMenu, footer, header { visibility: hidden; }
@@ -413,34 +427,77 @@ def make_donut(value, color, size=1.4):
 @st.cache_resource(show_spinner=False)
 def load_all_models(directory):
     loaded = {}
-    mapping = {
-        "Custom CNN": "custom_cnn.keras",
-        "VGG16"     : "vgg16.keras",
-        "ResNet50"  : "resnet50.keras",
+
+    # ── Rebuild architectures locally (same as training code) ─────────────
+    def build_custom_cnn():
+        from tensorflow.keras.layers import (Conv2D, MaxPooling2D, Dense, Dropout,
+                                              GlobalAveragePooling2D, BatchNormalization)
+        model = tf.keras.Sequential([
+            Conv2D(32,(3,3),activation='relu',padding='same',input_shape=(224,224,3)),
+            BatchNormalization(), Conv2D(32,(3,3),activation='relu',padding='same'),
+            MaxPooling2D(2,2),
+            Conv2D(64,(3,3),activation='relu',padding='same'),
+            BatchNormalization(), Conv2D(64,(3,3),activation='relu',padding='same'),
+            MaxPooling2D(2,2),
+            Conv2D(128,(3,3),activation='relu',padding='same'),
+            BatchNormalization(), Conv2D(128,(3,3),activation='relu',padding='same'),
+            MaxPooling2D(2,2),
+            GlobalAveragePooling2D(),
+            Dense(256,activation='relu'), BatchNormalization(), Dropout(0.5),
+            Dense(3,activation='softmax')
+        ], name='Custom_CNN')
+        return model
+
+    def build_vgg16():
+        base  = tf.keras.applications.VGG16(
+            weights=None, include_top=False, input_shape=(224,224,3))
+        model = tf.keras.Sequential([
+            base, tf.keras.layers.GlobalAveragePooling2D(),
+            tf.keras.layers.Dense(256,activation='relu'),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Dropout(0.5),
+            tf.keras.layers.Dense(3,activation='softmax')
+        ], name='VGG16')
+        return model
+
+    def build_resnet50():
+        base  = tf.keras.applications.ResNet50(
+            weights=None, include_top=False, input_shape=(224,224,3))
+        model = tf.keras.Sequential([
+            base, tf.keras.layers.GlobalAveragePooling2D(),
+            tf.keras.layers.Dense(256,activation='relu'),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Dropout(0.5),
+            tf.keras.layers.Dense(3,activation='softmax')
+        ], name='ResNet50')
+        return model
+
+    builders = {
+        "Custom CNN": build_custom_cnn,
+        "VGG16"     : build_vgg16,
+        "ResNet50"  : build_resnet50,
     }
-    for name, fname in mapping.items():
-        path = os.path.join(directory, fname)
-        if os.path.exists(path):
+    weight_files = {
+        "Custom CNN": "custom_cnn.weights.h5",
+        "VGG16"     : "vgg16.weights.h5",
+        "ResNet50"  : "resnet50.weights.h5",
+    }
+
+    for name, builder in builders.items():
+        wpath = os.path.join(directory, weight_files[name])
+        if os.path.exists(wpath):
             try:
-                # ── Try .keras format first ────────────────────────────
-                loaded[name] = tf.keras.models.load_model(
-                    path, compile=False
-                )
-                # Warm-up pass — fixes "never been called" error
-                _ = loaded[name](
-                    np.zeros((1, 224, 224, 3), dtype=np.float32),
-                    training=False
-                )
+                model = builder()
+                # Build model with dummy pass before loading weights
+                _ = model(np.zeros((1,224,224,3), dtype=np.float32),
+                          training=False)
+                model.load_weights(wpath)
+                loaded[name] = model
                 st.success(f"✅ {name} loaded")
-            except Exception as e1:
-                try:
-                    # ── Fallback: try legacy TF SavedModel format ──────
-                    loaded[name] = tf.saved_model.load(path)
-                    st.success(f"✅ {name} loaded (SavedModel)")
-                except Exception as e2:
-                    st.warning(f"⚠️ {name} failed to load: {e2}")
+            except Exception as e:
+                st.warning(f"⚠️ {name} failed: {str(e)[:150]}")
         else:
-            st.warning(f"⚠️ {name} not found at: {path}")
+            st.warning(f"⚠️ {name} weights not found → {wpath}")
     return loaded
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -460,7 +517,9 @@ with st.sidebar:
 
     st.markdown("**📁 Model Directory**")
     model_dir = st.text_input(
-        label="", value="models", label_visibility="collapsed"
+        label="Model Directory Path",
+        value="models",
+        label_visibility="hidden"
     )
 
     st.markdown("---")
@@ -506,8 +565,12 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 #  LOAD MODELS
 # ─────────────────────────────────────────────────────────────────────────────
-with st.spinner("Initialising AI models…"):
-    all_models = load_all_models(model_dir)
+loading_placeholder = st.empty()
+with loading_placeholder.container():
+    with st.spinner("Initialising AI models…"):
+        all_models = load_all_models(model_dir)
+time.sleep(1.5)
+loading_placeholder.empty()
 
 active = {}
 if use_cnn    and "Custom CNN" in all_models: active["Custom CNN"] = all_models["Custom CNN"]
@@ -632,7 +695,7 @@ with tab_predict:
                         font-family:"Space Mono",monospace; margin-bottom:6px'>
                 ORIGINAL
             </div>""", unsafe_allow_html=True)
-            st.image(resized_img, width="stretch")
+            st.image(resized_img, width='stretch')
 
         if show_gradcam:
             for col, (name, model) in zip(img_cols[1:], active.items()):
@@ -651,9 +714,9 @@ with tab_predict:
                         hmap = cv2.cvtColor(hmap, cv2.COLOR_BGR2RGB)
                         over = cv2.addWeighted(resized_img, 1 - gcam_alpha,
                                                hmap, gcam_alpha, 0)
-                        st.image(over, width="stretch")
+                        st.image(over, width='stretch')
                     else:
-                        st.image(resized_img, width="stretch")
+                        st.image(resized_img, width='stretch')
                         st.caption("Grad-CAM unavailable")
 
         st.markdown("---")
@@ -697,7 +760,7 @@ with tab_predict:
                     with donut_cols[idx]:
                         val = float(res["probs"][ci]) * 100
                         fig = make_donut(val, CLASS_HEX[cls], size=1.3)
-                        st.pyplot(fig, width="stretch")
+                        st.pyplot(fig, width='stretch')
                         plt.close(fig)
                         st.markdown(
                             f"<div style='text-align:center;font-size:0.62rem;"
@@ -872,7 +935,7 @@ with tab_batch:
             })
             if i < 6:
                 with thumb_cols[i]:
-                    st.image(img_r, caption=f.name[:12], width="stretch")
+                    st.image(img_r, caption=f.name[:12], width='stretch')
                     col_hex = CLASS_HEX[CLASS_NAMES[pi]]
                     st.markdown(
                         f"<div style='text-align:center; font-size:0.7rem;"
@@ -885,7 +948,7 @@ with tab_batch:
         df = pd.DataFrame(rows)
         st.markdown("<div class='section-header'>RESULTS TABLE</div>",
                     unsafe_allow_html=True)
-        st.dataframe(df, width="stretch",
+        st.dataframe(df, width='stretch',
                      column_config={
                          "Confidence": st.column_config.TextColumn("Confidence"),
                      })
@@ -933,7 +996,7 @@ with tab_batch:
         csv = df.to_csv(index=False)
         st.download_button("⬇ Download Results CSV", csv,
                            "batch_results.csv", "text/csv",
-                           width="stretch")
+                           width='stretch')
 
     elif not active:
         st.warning("No models active. Enable models in the sidebar.")
@@ -1000,7 +1063,7 @@ with tab_about:
         "Frozen"    : ["None", "Conv base", "Conv base"],
         "Expected Acc": ["88–93%", "92–96%", "94–98%"],
     }
-    st.dataframe(pd.DataFrame(arch_data), width="stretch", hide_index=True)
+    st.dataframe(pd.DataFrame(arch_data), width='stretch', hide_index=True)
 
     st.markdown("<div class='section-header'>PIPELINE OVERVIEW</div>",
                 unsafe_allow_html=True)
